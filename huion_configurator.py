@@ -1,9 +1,8 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import subprocess
 import os
 import json
-from threading import Thread
 import time
 
 # Размеры планшета
@@ -44,12 +43,20 @@ class HuionConfigurator:
         self.rect_y1 = self.config.get("top", 0) * SCALE
         self.rect_x2 = self.config.get("right", TABLET_WIDTH_MM) * SCALE
         self.rect_y2 = self.config.get("bottom", TABLET_HEIGHT_MM) * SCALE
-        self.rect = self.canvas.create_rectangle(self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2, outline="blue", width=2)
+        self.rect = self.canvas.create_rectangle(self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2, outline="blue", width=2, fill="lightblue")
 
         self.handles = []
         self.create_handles()
 
         self.selected_handle = None
+        self.is_moving = False
+        self.move_start_x = 0
+        self.move_start_y = 0
+        self.rect_start_x1 = 0
+        self.rect_start_y1 = 0
+        self.rect_start_x2 = 0
+        self.rect_start_y2 = 0
+        
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
@@ -141,9 +148,18 @@ class HuionConfigurator:
         test_button = tk.Button(button_frame, text="Тест устройств", command=self.test_devices, width=15)
         test_button.pack(side="left", padx=10)
 
-        # Кнопка для osu! - теперь она будет настраивать правильную область
-        osu_button = tk.Button(button_frame, text="Настройка osu!", command=self.setup_osu_mode, width=15)
+        # Кнопка для osu! - ЗАКОММЕНТИРОВАНА (в разработке)
+        osu_button = tk.Button(button_frame, text="Настройка osu!", command=self.osu_mode_in_development, width=15)
         osu_button.pack(side="left", padx=10)
+
+    def osu_mode_in_development(self):
+        """Сообщение о том, что настройка osu! в разработке"""
+        messagebox.showinfo("В разработке", 
+                           "Настройка для osu! временно недоступна.\n\n"
+                           "Функция в настоящее время разрабатывается и будет доступна в следующем обновлении.\n\n"
+                           "Для настройки osu! используйте стандартные функции:\n"
+                           "1. Настройте область вручную\n"
+                           "2. Нажмите 'Применить'")
 
     def load_config(self):
         self.config = {}
@@ -171,36 +187,79 @@ class HuionConfigurator:
             self.handles.append(handle)
 
     def on_press(self, event):
+        # Сначала проверяем, не кликнули ли на ручку
         for i, handle in enumerate(self.handles):
             coords = self.canvas.coords(handle)
             if coords[0] <= event.x <= coords[2] and coords[1] <= event.y <= coords[3]:
                 self.selected_handle = i
-                break
+                self.is_moving = False
+                return
+        
+        # Если кликнули на тело прямоугольника - начинаем перемещение
+        if (self.rect_x1 <= event.x <= self.rect_x2 and 
+            self.rect_y1 <= event.y <= self.rect_y2):
+            self.is_moving = True
+            self.selected_handle = None
+            self.move_start_x = event.x
+            self.move_start_y = event.y
+            self.rect_start_x1 = self.rect_x1
+            self.rect_start_y1 = self.rect_y1
+            self.rect_start_x2 = self.rect_x2
+            self.rect_start_y2 = self.rect_y2
+        else:
+            self.is_moving = False
+            self.selected_handle = None
 
     def on_drag(self, event):
-        if self.selected_handle is None:
-            return
-        x = max(0, min(event.x, TABLET_WIDTH_MM * SCALE))
-        y = max(0, min(event.y, TABLET_HEIGHT_MM * SCALE))
-        if self.selected_handle == 0:
-            self.rect_x1 = x
-            self.rect_y1 = y
-        elif self.selected_handle == 1:
-            self.rect_x2 = x
-            self.rect_y1 = y
-        elif self.selected_handle == 2:
-            self.rect_x1 = x
-            self.rect_y2 = y
-        elif self.selected_handle == 3:
-            self.rect_x2 = x
-            self.rect_y2 = y
-        self.canvas.coords(self.rect, self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2)
-        self.create_handles()
+        if self.is_moving:
+            # Перемещение всей области
+            dx = event.x - self.move_start_x
+            dy = event.y - self.move_start_y
+            
+            new_x1 = self.rect_start_x1 + dx
+            new_y1 = self.rect_start_y1 + dy
+            new_x2 = self.rect_start_x2 + dx
+            new_y2 = self.rect_start_y2 + dy
+            
+            # Проверяем границы
+            if (new_x1 >= 0 and new_y1 >= 0 and 
+                new_x2 <= TABLET_WIDTH_MM * SCALE and 
+                new_y2 <= TABLET_HEIGHT_MM * SCALE):
+                
+                self.rect_x1 = new_x1
+                self.rect_y1 = new_y1
+                self.rect_x2 = new_x2
+                self.rect_y2 = new_y2
+                
+                self.canvas.coords(self.rect, self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2)
+                self.create_handles()
+                
+        elif self.selected_handle is not None:
+            # Изменение размера через ручки
+            x = max(0, min(event.x, TABLET_WIDTH_MM * SCALE))
+            y = max(0, min(event.y, TABLET_HEIGHT_MM * SCALE))
+            if self.selected_handle == 0:
+                self.rect_x1 = x
+                self.rect_y1 = y
+            elif self.selected_handle == 1:
+                self.rect_x2 = x
+                self.rect_y1 = y
+            elif self.selected_handle == 2:
+                self.rect_x1 = x
+                self.rect_y2 = y
+            elif self.selected_handle == 3:
+                self.rect_x2 = x
+                self.rect_y2 = y
+            self.canvas.coords(self.rect, self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2)
+            self.create_handles()
 
     def on_release(self, event):
+        if self.is_moving or self.selected_handle is not None:
+            # Обновляем числовые значения при отпускании мыши
+            self.update_entries_from_rect()
+        
         self.selected_handle = None
-        # Обновляем числовые значения при отпускании мыши
-        self.update_entries_from_rect()
+        self.is_moving = False
 
     def update_entries_from_rect(self):
         """Обновляет поля ввода из текущих координат прямоугольника"""
@@ -302,48 +361,49 @@ class HuionConfigurator:
             subprocess.run(["xinput", "enable", device_id])
             print(f"Устройство {device_name} включено")
 
-    def setup_osu_mode(self):
-        """Специальные настройки для osu! - АБСОЛЮТНОЕ позиционирование"""
-        print("=== Настройка для osu! ===")
-        
-        # 1. Сначала сбрасываем все настройки
-        self.disable_relative_mode()
-        
-        # 2. Даем системе время применить изменения
-        time.sleep(0.5)
-        
-        # 3. Настраиваем небольшую область в центре для точности
-        center_x = TABLET_WIDTH_MM / 2
-        center_y = TABLET_HEIGHT_MM / 2
-        area_size = 40  # 40mm область
-        
-        # Устанавливаем новые значения
-        self.rect_x1 = (center_x - area_size/2) * SCALE
-        self.rect_y1 = (center_y - area_size/2) * SCALE  
-        self.rect_x2 = (center_x + area_size/2) * SCALE
-        self.rect_y2 = (center_y + area_size/2) * SCALE
-        
-        # Обновляем GUI
-        self.canvas.coords(self.rect, self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2)
-        self.create_handles()
-        self.update_entries_from_rect()
-        
-        # 4. Применяем матрицу преобразования
-        if self.apply_matrix():
-            print("✓ Область для osu! настроена")
-        
-        # 5. Отключаем кнопки планшета
-        self.disable_device(PAD_NAME)
-        
-        # 6. Настраиваем кнопки пера (только левая кнопка активна)
-        stylus_id = self.get_device_id(STYLUS_NAME)
-        if stylus_id:
-            subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
-            print("✓ Кнопки пера настроены")
-        
-        print("✓ Настройки для osu! применены")
-        print("В игре osu! включите: Options → Input → Tablet mode: Enabled")
-        print("Если курсор все еще не работает, перезапустите игру")
+    # ЗАКОММЕНТИРОВАННЫЙ МЕТОД - временно не используется
+    # def setup_osu_mode(self):
+    #     """Специальные настройки для osu! - АБСОЛЮТНОЕ позиционирование"""
+    #     print("=== Настройка для osu! ===")
+    #     
+    #     # 1. Сначала сбрасываем все настройки
+    #     self.disable_relative_mode()
+    #     
+    #     # 2. Даем системе время применить изменения
+    #     time.sleep(0.5)
+    #     
+    #     # 3. Настраиваем небольшую область в центре для точности
+    #     center_x = TABLET_WIDTH_MM / 2
+    #     center_y = TABLET_HEIGHT_MM / 2
+    #     area_size = 40  # 40mm область
+    #     
+    #     # Устанавливаем новые значения
+    #     self.rect_x1 = (center_x - area_size/2) * SCALE
+    #     self.rect_y1 = (center_y - area_size/2) * SCALE  
+    #     self.rect_x2 = (center_x + area_size/2) * SCALE
+    #     self.rect_y2 = (center_y + area_size/2) * SCALE
+    #     
+    #     # Обновляем GUI
+    #     self.canvas.coords(self.rect, self.rect_x1, self.rect_y1, self.rect_x2, self.rect_y2)
+    #     self.create_handles()
+    #     self.update_entries_from_rect()
+    #     
+    #     # 4. Применяем матрицу преобразования
+    #     if self.apply_matrix():
+    #         print("✓ Область для osu! настроена")
+    #     
+    #     # 5. Отключаем кнопки планшета
+    #     self.disable_device(PAD_NAME)
+    #     
+    #     # 6. Настраиваем кнопки пера (только левая кнопка активна)
+    #     stylus_id = self.get_device_id(STYLUS_NAME)
+    #     if stylus_id:
+    #         subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
+    #         print("✓ Кнопки пера настроены")
+    #     
+    #     print("✓ Настройки для osu! применены")
+    #     print("В игре osu! включите: Options → Input → Tablet mode: Enabled")
+    #     print("Если курсор все еще не работает, перезапустите игру")
 
     def disable_relative_mode(self):
         """Отключает относительный режим и возвращает абсолютное позиционирование"""
@@ -468,7 +528,7 @@ class HuionConfigurator:
         self.create_handles()
         self.update_entries_from_rect()
         
-        # Сброс матрицы преобразования
+        # Сброс матрица преобразования
         matrix = "1 0 0 0 1 0 0 0 1"
         try:
             subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), check=True)
