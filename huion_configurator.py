@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import subprocess
 import os
 import json
+import re
 import time
 
 # Размеры планшета
@@ -13,11 +14,41 @@ TABLET_HEIGHT_MM = 76.2
 STYLUS_NAME = "HUION H420 Pen Pen (0)"
 PAD_NAME = "HUION H420 Pad"
 
+STYLUS_ALIASES = [
+    STYLUS_NAME,
+    "HUION H420 Pen Pen",
+    "HUION H420 Pen",
+]
+PAD_ALIASES = [
+    PAD_NAME,
+    "HUION H420 Pad Pad",
+    "HUION H420 Pad pad",
+]
+
+STYLUS_SIGNATURES = [
+    ["huion", "h420", "pen"],
+    ["huion", "tablet", "pen"],
+]
+PAD_SIGNATURES = [
+    ["huion", "h420", "pad"],
+    ["huion", "tablet", "pad"],
+]
+
 # Масштаб GUI
 SCALE = 4
 
 # Config file
 CONFIG_FILE = "huion_config.json"
+
+# Профиль osu! по умолчанию (используется, если в конфиге профиль не задан)
+DEFAULT_OSU_PROFILE = {
+    "left": 33.9,
+    "top": 29.3,
+    "right": 68.2,
+    "bottom": 49.2,
+    "disable_keys": True,
+    "disable_pen_buttons": True,
+}
 
 class HuionConfigurator:
     def __init__(self, root):
@@ -148,18 +179,71 @@ class HuionConfigurator:
         test_button = tk.Button(button_frame, text="Тест устройств", command=self.test_devices, width=15)
         test_button.pack(side="left", padx=10)
 
-        # Кнопка для osu! - ЗАКОММЕНТИРОВАНА (в разработке)
-        osu_button = tk.Button(button_frame, text="Настройка osu!", command=self.osu_mode_in_development, width=15)
+        osu_button = tk.Button(button_frame, text="Профиль osu!", command=self.apply_osu_profile, width=15)
         osu_button.pack(side="left", padx=10)
 
-    def osu_mode_in_development(self):
-        """Сообщение о том, что настройка osu! в разработке"""
-        messagebox.showinfo("В разработке", 
-                           "Настройка для osu! временно недоступна.\n\n"
-                           "Функция в настоящее время разрабатывается и будет доступна в следующем обновлении.\n\n"
-                           "Для настройки osu! используйте стандартные функции:\n"
-                           "1. Настройте область вручную\n"
-                           "2. Нажмите 'Применить'")
+        save_osu_button = tk.Button(button_frame, text="Сохранить как osu!", command=self.save_current_as_osu_profile, width=15)
+        save_osu_button.pack(side="left", padx=10)
+
+    def get_osu_profile(self):
+        """Возвращает сохраненный профиль osu! или профиль по умолчанию"""
+        profile = self.config.get("osu_profile", {})
+        return {
+            "left": float(profile.get("left", DEFAULT_OSU_PROFILE["left"])),
+            "top": float(profile.get("top", DEFAULT_OSU_PROFILE["top"])),
+            "right": float(profile.get("right", DEFAULT_OSU_PROFILE["right"])),
+            "bottom": float(profile.get("bottom", DEFAULT_OSU_PROFILE["bottom"])),
+            "disable_keys": bool(profile.get("disable_keys", DEFAULT_OSU_PROFILE["disable_keys"])),
+            "disable_pen_buttons": bool(profile.get("disable_pen_buttons", DEFAULT_OSU_PROFILE["disable_pen_buttons"])),
+        }
+
+    def save_current_as_osu_profile(self):
+        """Сохраняет текущие настройки как фиксированный профиль osu!"""
+        try:
+            self.update_from_entries()
+            self.config["osu_profile"] = {
+                "left": float(self.left_entry.get()),
+                "top": float(self.top_entry.get()),
+                "right": float(self.right_entry.get()),
+                "bottom": float(self.bottom_entry.get()),
+                "disable_keys": self.disable_keys.get(),
+                "disable_pen_buttons": self.disable_pen_buttons.get(),
+            }
+            self.save_config()
+            messagebox.showinfo(
+                "Профиль osu! сохранен",
+                "Текущие настройки сохранены в профиль osu!\n"
+                "Теперь кнопка 'Профиль osu!' будет применять именно их."
+            )
+            print("✓ Профиль osu! сохранен")
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректные числа для области")
+
+    def apply_osu_profile(self):
+        """Применяет заранее сохраненный профиль osu!"""
+        profile = self.get_osu_profile()
+
+        self.left_entry.delete(0, tk.END)
+        self.left_entry.insert(0, f"{profile['left']:.1f}")
+        self.top_entry.delete(0, tk.END)
+        self.top_entry.insert(0, f"{profile['top']:.1f}")
+        self.right_entry.delete(0, tk.END)
+        self.right_entry.insert(0, f"{profile['right']:.1f}")
+        self.bottom_entry.delete(0, tk.END)
+        self.bottom_entry.insert(0, f"{profile['bottom']:.1f}")
+
+        self.disable_keys.set(profile["disable_keys"])
+        self.disable_pen_buttons.set(profile["disable_pen_buttons"])
+
+        self.apply_all()
+
+        messagebox.showinfo(
+            "Профиль osu! применен",
+            "Фиксированные настройки osu! успешно применены.\n"
+            "Если хотите изменить профиль, выставьте нужные параметры\n"
+            "и нажмите 'Сохранить как osu!'."
+        )
+        print("✓ Профиль osu! применен")
 
     def load_config(self):
         self.config = {}
@@ -325,7 +409,12 @@ class HuionConfigurator:
             
             print(f"Применяемая матрица: {matrix}")
             
-            result = subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), 
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
+            if not stylus_id:
+                print("Ошибка: перо не найдено")
+                return False
+
+            result = subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), 
                                   capture_output=True, text=True, check=True, timeout=10)
             print("Матрица преобразования применена успешно")
             return True
@@ -337,26 +426,118 @@ class HuionConfigurator:
             print(f"Ошибка применения матрицы: {e}")
             return False
 
-    def get_device_id(self, device_name):
-        """Получает ID устройства по имени"""
-        try:
-            result = subprocess.run(["xinput", "list", "--id-only", device_name], 
-                                  capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
-            print(f"Устройство {device_name} не найдено")
+    def has_xinput_environment(self):
+        """Проверяет, что окружение подходит для xinput (актуально для Linux Mint)."""
+        display = os.environ.get("DISPLAY")
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+        if not display:
+            print("Ошибка: переменная DISPLAY не установлена, xinput недоступен")
+            return False
+
+        # Linux Mint обычно работает в X11, где xinput стабилен.
+        if session_type == "wayland":
+            print("Предупреждение: обнаружен Wayland, xinput может работать нестабильно")
+
+        return True
+
+    def name_matches_device(self, found_name, candidate_names, signatures=None):
+        """Проверяет совпадение имени устройства по алиасам и сигнатурам токенов."""
+        found_lower = found_name.lower()
+        if any(candidate.lower() in found_lower for candidate in candidate_names):
+            return True
+
+        if not signatures:
+            return False
+
+        tokens = found_lower.replace("(", " ").replace(")", " ").replace("-", " ").split()
+        for signature in signatures:
+            if all(token in tokens for token in signature):
+                return True
+
+        return False
+
+    def parse_xinput_devices(self, xinput_output):
+        """Парсит вывод xinput list и возвращает пары (имя, id)."""
+        devices = []
+        for line in xinput_output.splitlines():
+            if "id=" not in line:
+                continue
+
+            clean_line = line.replace("↳", "").strip()
+            id_match = re.search(r"id=(\d+)", clean_line)
+            if not id_match:
+                continue
+
+            name = clean_line.split("id=")[0].strip()
+            devices.append((name, id_match.group(1)))
+
+        return devices
+
+    def get_device_id(self, device_name, aliases=None, signatures=None, retries=4, delay=0.25):
+        """Стабильно получает ID устройства: точное имя, алиасы, сигнатуры и повторные попытки."""
+        if not self.has_xinput_environment():
             return None
+        candidate_names = [device_name]
+        if aliases:
+            for alias in aliases:
+                if alias not in candidate_names:
+                    candidate_names.append(alias)
+
+        for attempt in range(1, retries + 1):
+            # 1) Точное получение через --id-only
+            for candidate in candidate_names:
+                try:
+                    result = subprocess.run(
+                        ["xinput", "list", "--id-only", candidate],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=5,
+                    )
+                    device_id = result.stdout.strip()
+                    if device_id:
+                        return device_id
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    pass
+
+            # 2) Fallback: полный список с частичным совпадением
+            try:
+                result = subprocess.run(
+                    ["xinput", "list"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=5,
+                )
+                devices = self.parse_xinput_devices(result.stdout)
+
+                for found_name, found_id in devices:
+                    if self.name_matches_device(found_name, candidate_names, signatures=signatures):
+                        return found_id
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
+            if attempt < retries:
+                time.sleep(delay)
+
+        print(f"Устройство {device_name} не найдено после {retries} попыток")
+        return None
 
     def disable_device(self, device_name):
         """Отключает устройство"""
-        device_id = self.get_device_id(device_name)
+        aliases = PAD_ALIASES if device_name == PAD_NAME else STYLUS_ALIASES
+        signatures = PAD_SIGNATURES if device_name == PAD_NAME else STYLUS_SIGNATURES
+        device_id = self.get_device_id(device_name, aliases=aliases, signatures=signatures)
         if device_id:
             subprocess.run(["xinput", "disable", device_id])
             print(f"Устройство {device_name} отключено")
 
     def enable_device(self, device_name):
         """Включает устройство"""
-        device_id = self.get_device_id(device_name)
+        aliases = PAD_ALIASES if device_name == PAD_NAME else STYLUS_ALIASES
+        signatures = PAD_SIGNATURES if device_name == PAD_NAME else STYLUS_SIGNATURES
+        device_id = self.get_device_id(device_name, aliases=aliases, signatures=signatures)
         if device_id:
             subprocess.run(["xinput", "enable", device_id])
             print(f"Устройство {device_name} включено")
@@ -396,7 +577,7 @@ class HuionConfigurator:
     #     self.disable_device(PAD_NAME)
     #     
     #     # 6. Настраиваем кнопки пера (только левая кнопка активна)
-    #     stylus_id = self.get_device_id(STYLUS_NAME)
+    #     stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
     #     if stylus_id:
     #         subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
     #         print("✓ Кнопки пера настроены")
@@ -408,11 +589,11 @@ class HuionConfigurator:
     def disable_relative_mode(self):
         """Отключает относительный режим и возвращает абсолютное позиционирование"""
         try:
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 # Сбрасываем матрицу преобразования
                 matrix = "1 0 0 0 1 0 0 0 1"
-                subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), 
+                subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), 
                              check=True, capture_output=True)
                 
                 # Проверяем и отключаем относительный режим если он есть
@@ -444,13 +625,13 @@ class HuionConfigurator:
         # Для кнопки пера
         if self.disable_pen_buttons.get():
             # Отключаем кнопки пера через переназначение на несуществующие кнопки
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
                 print("Кнопки пера отключены")
         else:
             # Восстанавливаем стандартные кнопки
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 subprocess.run(["xinput", "set-button-map", stylus_id, "1", "2", "3"])
                 print("Кнопки пера включены")
@@ -460,7 +641,9 @@ class HuionConfigurator:
         print("=== Тест устройств ===")
         devices = [STYLUS_NAME, PAD_NAME]
         for device in devices:
-            device_id = self.get_device_id(device)
+            aliases = PAD_ALIASES if device == PAD_NAME else STYLUS_ALIASES
+            signatures = PAD_SIGNATURES if device == PAD_NAME else STYLUS_SIGNATURES
+            device_id = self.get_device_id(device, aliases=aliases, signatures=signatures)
             if device_id:
                 print(f"✓ {device} найден (ID: {device_id})")
                 
@@ -531,14 +714,18 @@ class HuionConfigurator:
         # Сброс матрица преобразования
         matrix = "1 0 0 0 1 0 0 0 1"
         try:
-            subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), check=True)
-            print("✓ Матрица преобразования сброшена")
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
+            if stylus_id:
+                subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), check=True)
+                print("✓ Матрица преобразования сброшена")
+            else:
+                print("✗ Перо не найдено для сброса матрицы")
         except subprocess.CalledProcessError:
             print("✗ Ошибка при сбросе матрицы")
         
         # Включение всех устройств
         self.enable_device(PAD_NAME)
-        stylus_id = self.get_device_id(STYLUS_NAME)
+        stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
         if stylus_id:
             subprocess.run(["xinput", "set-button-map", stylus_id, "1", "2", "3"])
             print("✓ Кнопки сброшены")
