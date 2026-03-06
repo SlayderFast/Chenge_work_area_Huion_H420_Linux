@@ -3,7 +3,6 @@ from tkinter import ttk, messagebox
 import subprocess
 import os
 import json
-import time
 
 # Размеры планшета
 TABLET_WIDTH_MM = 121.9
@@ -18,6 +17,16 @@ SCALE = 4
 
 # Config file
 CONFIG_FILE = "huion_config.json"
+
+# Профиль osu! по умолчанию (используется, если в конфиге профиль не задан)
+DEFAULT_OSU_PROFILE = {
+    "left": 33.9,
+    "top": 29.3,
+    "right": 68.2,
+    "bottom": 49.2,
+    "disable_keys": True,
+    "disable_pen_buttons": True,
+}
 
 class HuionConfigurator:
     def __init__(self, root):
@@ -148,18 +157,71 @@ class HuionConfigurator:
         test_button = tk.Button(button_frame, text="Тест устройств", command=self.test_devices, width=15)
         test_button.pack(side="left", padx=10)
 
-        # Кнопка для osu! - ЗАКОММЕНТИРОВАНА (в разработке)
-        osu_button = tk.Button(button_frame, text="Настройка osu!", command=self.osu_mode_in_development, width=15)
+        osu_button = tk.Button(button_frame, text="Профиль osu!", command=self.apply_osu_profile, width=15)
         osu_button.pack(side="left", padx=10)
 
-    def osu_mode_in_development(self):
-        """Сообщение о том, что настройка osu! в разработке"""
-        messagebox.showinfo("В разработке", 
-                           "Настройка для osu! временно недоступна.\n\n"
-                           "Функция в настоящее время разрабатывается и будет доступна в следующем обновлении.\n\n"
-                           "Для настройки osu! используйте стандартные функции:\n"
-                           "1. Настройте область вручную\n"
-                           "2. Нажмите 'Применить'")
+        save_osu_button = tk.Button(button_frame, text="Сохранить как osu!", command=self.save_current_as_osu_profile, width=15)
+        save_osu_button.pack(side="left", padx=10)
+
+    def get_osu_profile(self):
+        """Возвращает сохраненный профиль osu! или профиль по умолчанию"""
+        profile = self.config.get("osu_profile", {})
+        return {
+            "left": float(profile.get("left", DEFAULT_OSU_PROFILE["left"])),
+            "top": float(profile.get("top", DEFAULT_OSU_PROFILE["top"])),
+            "right": float(profile.get("right", DEFAULT_OSU_PROFILE["right"])),
+            "bottom": float(profile.get("bottom", DEFAULT_OSU_PROFILE["bottom"])),
+            "disable_keys": bool(profile.get("disable_keys", DEFAULT_OSU_PROFILE["disable_keys"])),
+            "disable_pen_buttons": bool(profile.get("disable_pen_buttons", DEFAULT_OSU_PROFILE["disable_pen_buttons"])),
+        }
+
+    def save_current_as_osu_profile(self):
+        """Сохраняет текущие настройки как фиксированный профиль osu!"""
+        try:
+            self.update_from_entries()
+            self.config["osu_profile"] = {
+                "left": float(self.left_entry.get()),
+                "top": float(self.top_entry.get()),
+                "right": float(self.right_entry.get()),
+                "bottom": float(self.bottom_entry.get()),
+                "disable_keys": self.disable_keys.get(),
+                "disable_pen_buttons": self.disable_pen_buttons.get(),
+            }
+            self.save_config()
+            messagebox.showinfo(
+                "Профиль osu! сохранен",
+                "Текущие настройки сохранены в профиль osu!\n"
+                "Теперь кнопка 'Профиль osu!' будет применять именно их."
+            )
+            print("✓ Профиль osu! сохранен")
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректные числа для области")
+
+    def apply_osu_profile(self):
+        """Применяет заранее сохраненный профиль osu!"""
+        profile = self.get_osu_profile()
+
+        self.left_entry.delete(0, tk.END)
+        self.left_entry.insert(0, f"{profile['left']:.1f}")
+        self.top_entry.delete(0, tk.END)
+        self.top_entry.insert(0, f"{profile['top']:.1f}")
+        self.right_entry.delete(0, tk.END)
+        self.right_entry.insert(0, f"{profile['right']:.1f}")
+        self.bottom_entry.delete(0, tk.END)
+        self.bottom_entry.insert(0, f"{profile['bottom']:.1f}")
+
+        self.disable_keys.set(profile["disable_keys"])
+        self.disable_pen_buttons.set(profile["disable_pen_buttons"])
+
+        self.apply_all()
+
+        messagebox.showinfo(
+            "Профиль osu! применен",
+            "Фиксированные настройки osu! успешно применены.\n"
+            "Если хотите изменить профиль, выставьте нужные параметры\n"
+            "и нажмите 'Сохранить как osu!'."
+        )
+        print("✓ Профиль osu! применен")
 
     def load_config(self):
         self.config = {}
