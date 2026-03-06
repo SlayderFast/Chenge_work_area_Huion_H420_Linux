@@ -3,6 +3,8 @@ from tkinter import ttk, messagebox
 import subprocess
 import os
 import json
+import re
+import time
 
 # Размеры планшета
 TABLET_WIDTH_MM = 121.9
@@ -11,6 +13,26 @@ TABLET_HEIGHT_MM = 76.2
 # Имена устройств xinput из вашего вывода
 STYLUS_NAME = "HUION H420 Pen Pen (0)"
 PAD_NAME = "HUION H420 Pad"
+
+STYLUS_ALIASES = [
+    STYLUS_NAME,
+    "HUION H420 Pen Pen",
+    "HUION H420 Pen",
+]
+PAD_ALIASES = [
+    PAD_NAME,
+    "HUION H420 Pad Pad",
+    "HUION H420 Pad pad",
+]
+
+STYLUS_SIGNATURES = [
+    ["huion", "h420", "pen"],
+    ["huion", "tablet", "pen"],
+]
+PAD_SIGNATURES = [
+    ["huion", "h420", "pad"],
+    ["huion", "tablet", "pad"],
+]
 
 # Масштаб GUI
 SCALE = 4
@@ -387,7 +409,12 @@ class HuionConfigurator:
             
             print(f"Применяемая матрица: {matrix}")
             
-            result = subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), 
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
+            if not stylus_id:
+                print("Ошибка: перо не найдено")
+                return False
+
+            result = subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), 
                                   capture_output=True, text=True, check=True, timeout=10)
             print("Матрица преобразования применена успешно")
             return True
@@ -399,26 +426,118 @@ class HuionConfigurator:
             print(f"Ошибка применения матрицы: {e}")
             return False
 
-    def get_device_id(self, device_name):
-        """Получает ID устройства по имени"""
-        try:
-            result = subprocess.run(["xinput", "list", "--id-only", device_name], 
-                                  capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
-            print(f"Устройство {device_name} не найдено")
+    def has_xinput_environment(self):
+        """Проверяет, что окружение подходит для xinput (актуально для Linux Mint)."""
+        display = os.environ.get("DISPLAY")
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+        if not display:
+            print("Ошибка: переменная DISPLAY не установлена, xinput недоступен")
+            return False
+
+        # Linux Mint обычно работает в X11, где xinput стабилен.
+        if session_type == "wayland":
+            print("Предупреждение: обнаружен Wayland, xinput может работать нестабильно")
+
+        return True
+
+    def name_matches_device(self, found_name, candidate_names, signatures=None):
+        """Проверяет совпадение имени устройства по алиасам и сигнатурам токенов."""
+        found_lower = found_name.lower()
+        if any(candidate.lower() in found_lower for candidate in candidate_names):
+            return True
+
+        if not signatures:
+            return False
+
+        tokens = found_lower.replace("(", " ").replace(")", " ").replace("-", " ").split()
+        for signature in signatures:
+            if all(token in tokens for token in signature):
+                return True
+
+        return False
+
+    def parse_xinput_devices(self, xinput_output):
+        """Парсит вывод xinput list и возвращает пары (имя, id)."""
+        devices = []
+        for line in xinput_output.splitlines():
+            if "id=" not in line:
+                continue
+
+            clean_line = line.replace("↳", "").strip()
+            id_match = re.search(r"id=(\d+)", clean_line)
+            if not id_match:
+                continue
+
+            name = clean_line.split("id=")[0].strip()
+            devices.append((name, id_match.group(1)))
+
+        return devices
+
+    def get_device_id(self, device_name, aliases=None, signatures=None, retries=4, delay=0.25):
+        """Стабильно получает ID устройства: точное имя, алиасы, сигнатуры и повторные попытки."""
+        if not self.has_xinput_environment():
             return None
+        candidate_names = [device_name]
+        if aliases:
+            for alias in aliases:
+                if alias not in candidate_names:
+                    candidate_names.append(alias)
+
+        for attempt in range(1, retries + 1):
+            # 1) Точное получение через --id-only
+            for candidate in candidate_names:
+                try:
+                    result = subprocess.run(
+                        ["xinput", "list", "--id-only", candidate],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=5,
+                    )
+                    device_id = result.stdout.strip()
+                    if device_id:
+                        return device_id
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    pass
+
+            # 2) Fallback: полный список с частичным совпадением
+            try:
+                result = subprocess.run(
+                    ["xinput", "list"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=5,
+                )
+                devices = self.parse_xinput_devices(result.stdout)
+
+                for found_name, found_id in devices:
+                    if self.name_matches_device(found_name, candidate_names, signatures=signatures):
+                        return found_id
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
+            if attempt < retries:
+                time.sleep(delay)
+
+        print(f"Устройство {device_name} не найдено после {retries} попыток")
+        return None
 
     def disable_device(self, device_name):
         """Отключает устройство"""
-        device_id = self.get_device_id(device_name)
+        aliases = PAD_ALIASES if device_name == PAD_NAME else STYLUS_ALIASES
+        signatures = PAD_SIGNATURES if device_name == PAD_NAME else STYLUS_SIGNATURES
+        device_id = self.get_device_id(device_name, aliases=aliases, signatures=signatures)
         if device_id:
             subprocess.run(["xinput", "disable", device_id])
             print(f"Устройство {device_name} отключено")
 
     def enable_device(self, device_name):
         """Включает устройство"""
-        device_id = self.get_device_id(device_name)
+        aliases = PAD_ALIASES if device_name == PAD_NAME else STYLUS_ALIASES
+        signatures = PAD_SIGNATURES if device_name == PAD_NAME else STYLUS_SIGNATURES
+        device_id = self.get_device_id(device_name, aliases=aliases, signatures=signatures)
         if device_id:
             subprocess.run(["xinput", "enable", device_id])
             print(f"Устройство {device_name} включено")
@@ -458,7 +577,7 @@ class HuionConfigurator:
     #     self.disable_device(PAD_NAME)
     #     
     #     # 6. Настраиваем кнопки пера (только левая кнопка активна)
-    #     stylus_id = self.get_device_id(STYLUS_NAME)
+    #     stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
     #     if stylus_id:
     #         subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
     #         print("✓ Кнопки пера настроены")
@@ -470,11 +589,11 @@ class HuionConfigurator:
     def disable_relative_mode(self):
         """Отключает относительный режим и возвращает абсолютное позиционирование"""
         try:
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 # Сбрасываем матрицу преобразования
                 matrix = "1 0 0 0 1 0 0 0 1"
-                subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), 
+                subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), 
                              check=True, capture_output=True)
                 
                 # Проверяем и отключаем относительный режим если он есть
@@ -506,13 +625,13 @@ class HuionConfigurator:
         # Для кнопки пера
         if self.disable_pen_buttons.get():
             # Отключаем кнопки пера через переназначение на несуществующие кнопки
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 subprocess.run(["xinput", "set-button-map", stylus_id, "1", "0", "0"])
                 print("Кнопки пера отключены")
         else:
             # Восстанавливаем стандартные кнопки
-            stylus_id = self.get_device_id(STYLUS_NAME)
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
             if stylus_id:
                 subprocess.run(["xinput", "set-button-map", stylus_id, "1", "2", "3"])
                 print("Кнопки пера включены")
@@ -522,7 +641,9 @@ class HuionConfigurator:
         print("=== Тест устройств ===")
         devices = [STYLUS_NAME, PAD_NAME]
         for device in devices:
-            device_id = self.get_device_id(device)
+            aliases = PAD_ALIASES if device == PAD_NAME else STYLUS_ALIASES
+            signatures = PAD_SIGNATURES if device == PAD_NAME else STYLUS_SIGNATURES
+            device_id = self.get_device_id(device, aliases=aliases, signatures=signatures)
             if device_id:
                 print(f"✓ {device} найден (ID: {device_id})")
                 
@@ -593,14 +714,18 @@ class HuionConfigurator:
         # Сброс матрица преобразования
         matrix = "1 0 0 0 1 0 0 0 1"
         try:
-            subprocess.run(["xinput", "set-prop", STYLUS_NAME, "Coordinate Transformation Matrix"] + matrix.split(), check=True)
-            print("✓ Матрица преобразования сброшена")
+            stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
+            if stylus_id:
+                subprocess.run(["xinput", "set-prop", stylus_id, "Coordinate Transformation Matrix"] + matrix.split(), check=True)
+                print("✓ Матрица преобразования сброшена")
+            else:
+                print("✗ Перо не найдено для сброса матрицы")
         except subprocess.CalledProcessError:
             print("✗ Ошибка при сбросе матрицы")
         
         # Включение всех устройств
         self.enable_device(PAD_NAME)
-        stylus_id = self.get_device_id(STYLUS_NAME)
+        stylus_id = self.get_device_id(STYLUS_NAME, aliases=STYLUS_ALIASES, signatures=STYLUS_SIGNATURES)
         if stylus_id:
             subprocess.run(["xinput", "set-button-map", stylus_id, "1", "2", "3"])
             print("✓ Кнопки сброшены")
